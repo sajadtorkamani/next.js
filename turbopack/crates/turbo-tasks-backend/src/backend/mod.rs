@@ -1487,16 +1487,18 @@ impl<B: BackingStorage> TurboTasksBackendInner<B> {
                     OutdatedOutput(TaskId),
                 }
                 let mut dependencies = Vec::new();
-                dependencies.extend(
-                    iter_many!(task, CellDependency { target } => Dep::CurrentCell(target)),
-                );
+                if !is_immutable {
+                    dependencies.extend(
+                        iter_many!(task, CellDependency { target } => Dep::CurrentCell(target)),
+                    );
+                }
                 dependencies.extend(
                     iter_many!(task, OutputDependency { target } => Dep::CurrentOutput(target)),
                 );
                 if !is_immutable {
                     dependencies.extend(iter_many!(task, OutdatedCellDependency { target } => Dep::OutdatedCell(target)));
-                    dependencies.extend(iter_many!(task, OutdatedOutputDependency { target } => Dep::OutdatedOutput(target)));
                 }
+                dependencies.extend(iter_many!(task, OutdatedOutputDependency { target } => Dep::OutdatedOutput(target)));
 
                 for dep in dependencies {
                     match dep {
