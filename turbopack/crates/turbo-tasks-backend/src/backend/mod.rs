@@ -647,7 +647,7 @@ impl<B: BackingStorage> TurboTasksBackendInner<B> {
             task_id: TaskId,
             ctx: &mut impl ExecuteContext<'_>,
         ) {
-            if !backend.should_track_dependencies() || task.is_immutable() {
+            if !backend.should_track_dependencies() {
                 return;
             }
             if let Some(reader) = reader {
