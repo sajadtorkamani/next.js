@@ -1434,6 +1434,7 @@ impl<B: BackingStorage> TurboTasksBackendInner<B> {
         {
             let mut ctx = self.execute_context(turbo_tasks);
             let mut task = ctx.task(task_id, TaskDataCategory::All);
+            let is_immutable = task.is_immutable();
             let in_progress = remove!(task, InProgress)?;
             let InProgressState::Scheduled { done_event } = in_progress else {
                 task.add_new(CachedDataItem::InProgress { value: in_progress });
@@ -1485,11 +1486,18 @@ impl<B: BackingStorage> TurboTasksBackendInner<B> {
                     OutdatedCell(CellRef),
                     OutdatedOutput(TaskId),
                 }
-                let dependencies = iter_many!(task, CellDependency { target } => Dep::CurrentCell(target))
-                    .chain(iter_many!(task, OutputDependency { target } => Dep::CurrentOutput(target)))
-                    .chain(iter_many!(task, OutdatedCellDependency { target } => Dep::OutdatedCell(target)))
-                    .chain(iter_many!(task, OutdatedOutputDependency { target } => Dep::OutdatedOutput(target)))
-                    .collect::<Vec<_>>();
+                let mut dependencies = Vec::new();
+                dependencies.extend(
+                    iter_many!(task, CellDependency { target } => Dep::CurrentCell(target)),
+                );
+                dependencies.extend(
+                    iter_many!(task, OutputDependency { target } => Dep::CurrentOutput(target)),
+                );
+                if !is_immutable {
+                    dependencies.extend(iter_many!(task, OutdatedCellDependency { target } => Dep::OutdatedCell(target)));
+                    dependencies.extend(iter_many!(task, OutdatedOutputDependency { target } => Dep::OutdatedOutput(target)));
+                }
+
                 for dep in dependencies {
                     match dep {
                         Dep::CurrentCell(cell) => {
