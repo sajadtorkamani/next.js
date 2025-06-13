@@ -34,6 +34,7 @@ import { InvariantError } from '../../../shared/lib/invariant-error'
 import type { Revalidate } from '../cache-control'
 import { getPreviouslyRevalidatedTags } from '../../server-utils'
 import { workAsyncStorage } from '../../app-render/work-async-storage.external'
+import { DetachedPromise } from '../../../lib/detached-promise'
 
 export interface CacheHandlerContext {
   fs?: CacheFs
@@ -90,6 +91,7 @@ export class IncrementalCache implements IncrementalCacheType {
   readonly fetchCacheKeyPrefix?: string
   readonly revalidatedTags?: string[]
   readonly isOnDemandRevalidate?: boolean
+  private readonly debug: boolean = !!process.env.NEXT_PRIVATE_DEBUG_CACHE
 
   private readonly locks = new Map<string, Promise<void>>()
 
@@ -124,7 +126,6 @@ export class IncrementalCache implements IncrementalCacheType {
     fetchCacheKeyPrefix?: string
     CurCacheHandler?: typeof CacheHandler
   }) {
-    const debug = !!process.env.NEXT_PRIVATE_DEBUG_CACHE
     this.hasCustomCacheHandler = Boolean(CurCacheHandler)
 
     const cacheHandlersSymbol = Symbol.for('@next/cache-handlers')
@@ -142,13 +143,13 @@ export class IncrementalCache implements IncrementalCacheType {
         CurCacheHandler = globalCacheHandler.FetchCache
       } else {
         if (fs && serverDistDir) {
-          if (debug) {
+          if (this.debug) {
             console.log('using filesystem cache handler')
           }
           CurCacheHandler = FileSystemCache
         }
       }
-    } else if (debug) {
+    } else if (this.debug) {
       console.log('using custom cache handler', CurCacheHandler.name)
     }
 
@@ -234,23 +235,47 @@ export class IncrementalCache implements IncrementalCacheType {
     this.cacheHandler?.resetRequestCache?.()
   }
 
-  async lock(cacheKey: string) {
-    let unlockNext: () => Promise<void> = () => Promise.resolve()
-    const existingLock = this.locks.get(cacheKey)
+  async lock(cacheKey: string): Promise<() => Promise<void>> {
+    // Wait for any existing lock on this cache key to be released
+    // This implements a simple queue-based locking mechanism
+    while (true) {
+      const lock = this.locks.get(cacheKey)
 
-    if (existingLock) {
-      await existingLock
+      if (this.debug) {
+        console.log('lock get', cacheKey, !!lock)
+      }
+
+      // If no lock exists, we can proceed to acquire it
+      if (!lock) break
+
+      // Wait for the existing lock to be released before trying again
+      await lock
     }
 
-    const newLock = new Promise<void>((resolve) => {
-      unlockNext = async () => {
-        resolve()
-        this.locks.delete(cacheKey) // Remove the lock upon release
-      }
-    })
+    // Create a new detached promise that will represent this lock
+    // The resolve function (unlock) will be returned to the caller
+    const { resolve: unlock, promise } = new DetachedPromise<void>()
 
-    this.locks.set(cacheKey, newLock)
-    return unlockNext
+    if (this.debug) {
+      console.log('successfully locked', cacheKey)
+    }
+
+    // Store the lock promise in the locks map
+    // When the promise resolves, automatically clean up the lock entry
+    this.locks.set(
+      cacheKey,
+      promise.then(() => {
+        // Remove the lock from the map once it's released
+        this.locks.delete(cacheKey)
+        if (this.debug) {
+          console.log('lock delete', cacheKey)
+        }
+      })
+    )
+
+    // Return a function that the caller can use to release the lock
+    // When called, it resolves the promise which triggers cleanup
+    return () => Promise.resolve(unlock())
   }
 
   async revalidateTag(tags: string | string[]): Promise<void> {
